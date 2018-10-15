@@ -15,7 +15,7 @@
 
 #include "mmdev.h"
 
-int mmdev_nr_dev = MMDEV_NR_DEVS;
+int mmdev_nr_dev = MMDEV_NR_DEV;
 int mmdev_debug = 1;
 
 module_param(mmdev_nr_dev, int, 0444);
@@ -28,7 +28,80 @@ struct mmdev_dev *mmdev_devices;
 u32 mmdev_major;
 u32 mmdev_minor = 0;
 
-void mmdev_setup_cdev(struct mmdev_dev *mmdev, u32 index)
+static int mmdev_open(struct inode* i_node, struct file* filp)
+{
+    struct mmdev_dev *device = container_of(i_node->cdev, struct mmdev_dev, cdev);
+    filp->.private_data = device;
+    if((filp->f_flags & O_ACCMODE) == O_WRONLY){
+        if(device->data){
+            if(down_interruptible(&device->sem))
+                return -ERESTARTSYS;
+            kfree(device->data);
+            up(&device->sem);
+        }
+    }
+    return 0;
+}
+
+static int mmdev_release(struct inode* i_node, struct file* filp)
+{
+    return 0;
+}
+
+static ssize_t mmdev_read(struct file* filp, char __user* ubuf, size_t size, loff_t* offset)
+{
+    unsigned long n;
+    ssize_t ret;
+    struct mmdev_dev *device = filp->private_data;
+    if(down_interruptible(&device->sem))
+        return -ERESTARTSYS;
+    if(!access_ok(VERIFY_READ, (void __user*)ubuf, (unsigned long)size)){
+        ret = -EFAULT;
+        goto finish;
+    }
+    if(!device->data || (*offset > device->mmdev_size)){
+        ret = -EFAULT;
+        goto finish;
+    }
+    size = ((*offset + size) > device->mmdev_size) ? device->mmdev_size - *offset : size; 
+    if(copy_to_user(ubuf, device->data[*offset]), size){
+        ret = -EFAULT;
+        goto finish;
+    }
+    /*Update file offset*/
+    *offset += size;
+    ret = size;
+
+    finish :
+        up(&device->sem);
+        return ret;
+}
+
+static struct file_operations mmdev_fops = {
+    .owner   = THIS_MODULE,
+    .open    = mmdev_open,
+    .release = mmdev_release,
+    .read    = mmdev_read,
+    .write   = mmdev_write,
+};
+
+static void mmdev_exit_module(void)
+{
+    u32 i;
+    if(mmdev_devices){
+        for(i=0; i<mmdev_nr_dev; i++){
+            if(mmdev_devices[i].data){
+                kfree(mmdev_devices[i].data)
+            }
+            cdev_del(&mmdev_devices[i].cdev);
+        }
+        kfree(mmdev_devices);
+    }
+
+    unregister_chrdev_region(MKDEV(mmdev_major, mmdev_minor), mmdev_nr_dev);
+}
+
+static void mmdev_setup_cdev(struct mmdev_dev *mmdev, u32 index)
 {
     u32 res;
     dev_t dev = MKDEV(mmdev_major, mmdev_minor + index);
@@ -40,34 +113,31 @@ void mmdev_setup_cdev(struct mmdev_dev *mmdev, u32 index)
         KDBG("Unable to add cdev\n");
 }
 
-void mmdev_exit_module(void)
-{
-    KDBG("Module exit\n");
-}
 
 int mmdev_init_module(void)
 {
     dev_t dev;
     u32 result, i;
 
-    result = alloc_chrdev_region(&dev, mmdev_minor, mmdev_nr_devs);
+    result = alloc_chrdev_region(&dev, mmdev_minor, mmdev_nr_dev);
     if(result<0){
         KDBG("Chardev allocation error");
         return result;
     }
     mmdev_major = MAJOR(dev);
    
-    mm_device = kmalloc(mmdev_nr_devs * sizeof(struct mmdev_dev));
+    mm_device = kmalloc(mmdev_nr_dev * sizeof(struct mmdev_dev));
     if(!mm_device){
         KDBG("Memory allocation error");
         goto out;
     }
 
-    for(i=0; i<mmdev_nr_devs; i++){
+    for(i=0; i<mmdev_nr_dev; i++){
         mm_device[i].mmdev_size = mmdev_size;
         sema_init(&mm_device[i].sem, 1);
         mmdev_setup_cdev(&mm_device[i], i); 
     }
+    return 0;
 
     out :
         mmdev_exit_module();
