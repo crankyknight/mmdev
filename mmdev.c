@@ -17,7 +17,7 @@
 #include "mmdev.h"
 
 int mmdev_nr_dev = MMDEV_NR_DEV;
-int mmdev_debug = 1;
+int mmdev_debug = 7;
 
 module_param(mmdev_nr_dev, int, 0444);
 module_param(mmdev_debug, int, 0644);
@@ -53,14 +53,16 @@ static ssize_t mmdev_read(struct file* filp, char __user* ubuf, size_t size, lof
 {
     ssize_t ret;
     struct mmdev_dev *device = filp->private_data;
-    KDBG("Starting module read\n");
+    KDBGRD("Starting module read\n");
     if(down_interruptible(&device->sem))
         return -ERESTARTSYS;
     if(!access_ok(VERIFY_WRITE, (void __user*)ubuf, (unsigned long)size)){
+        KDBGRD("Access not ok\n");
         ret = -EFAULT;
         goto finish;
     }
     if(!device->data || (*offset > device->mmdev_size)){
+        KDBGRD("Offset too large\n");
         ret = -EFAULT;
         goto finish;
     }
@@ -84,30 +86,35 @@ static ssize_t mmdev_write(struct file* filp, const char __user* ubuf, size_t si
     u32 rem;
     struct mmdev_dev *device = filp->private_data;
 
-    KDBG("Starting module write\n");
+    KDBGWR("Starting module write\n");
     if(down_interruptible(&device->sem))
         return -ERESTARTSYS;
 
     if(!access_ok(VERIFY_READ, (void __user*)ubuf, (unsigned long)size)){
+        KDBGWR("Access not ok\n");
         ret = -EFAULT;
         goto finish;
     }
     if(*offset > device->mmdev_size){
+        KDBGWR("Offset too large\n");
         ret = -EFAULT;
         goto finish;
     }
     size = (*offset + size) > device->mmdev_size ? device->mmdev_size - *offset : size;
+    KDBGWR("Data pointer = %p\n", device->data);
     if(!device->data){
         /*If not allocated, allocate now */
         device->data = kmalloc(device->mmdev_size, GFP_KERNEL);
-        KDBG("Allocated data as %p", device->data);
+        KDBGWR("Allocated data as %p\n", device->data);
     }
 
     if(copy_from_user(&((char*)(device->data))[*offset], ubuf, size)){
+        KDBGWR("Copy failed\n");
         ret = -EFAULT;
         goto finish;
     }
     *offset += size;
+    ret = size;
     rem = device->mmdev_size - *offset;
     if(rem){
         /*Fill remainder of device with MAGIC_VAL*/
@@ -176,6 +183,7 @@ int mmdev_init_module(void)
     }
 
     for(i=0; i<mmdev_nr_dev; i++){
+        mmdev_devices[i].data = NULL;
         mmdev_devices[i].mmdev_size = MMDEV_SIZE;
         sema_init(&mmdev_devices[i].sem, 1);
         mmdev_setup_cdev(&mmdev_devices[i], i); 
