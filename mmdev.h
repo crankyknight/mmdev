@@ -1,9 +1,10 @@
 #ifndef _MMDEV_H_
 #define _MMDEV_H_
 
-#define MMDEV_NR_DEV   (4)
-#define MMDEV_SIZE      (4096)
+#define MMDEV_NR_DEV  (4)
+#define MMDEV_SIZE    (4096)
 
+#define MAGIC_VAL     (0x5a)
 
 #ifdef __KERNEL__
 #       define KDBG(fmt, args...) \

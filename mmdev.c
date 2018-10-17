@@ -12,6 +12,7 @@
 #include <linux/seq_file.h>
 #include <linux/cdev.h>
 #include <linux/uaccess.h>	/* copy_*_user */
+#include <linux/string.h> /* memset */
 
 #include "mmdev.h"
 
@@ -71,6 +72,45 @@ static ssize_t mmdev_read(struct file* filp, char __user* ubuf, size_t size, lof
     /*Update file offset*/
     *offset += size;
     ret = size;
+
+    finish :
+        up(&device->sem);
+        return ret;
+}
+
+static ssize_t mmdev_write(struct file* filp, char __user* ubuf, size_t size, loff_t* offset)
+{
+    ssize_t ret;
+    u32 rem;
+    struct mmdev_dev *device = filp->private_data;
+
+    if(down_interruptible(&device->sem))
+        return -ERESTARTSYS;
+
+    if(!access_ok(VERIFY_WRITE, (void __user*)ubuf, (unsigned long)size)){
+        ret = -EFAULT;
+        goto finish;
+    }
+    if(*offset > device->mmdev_size){
+        ret = -EFAULT;
+        goto finish;
+    }
+    size = (*offset + size) > device->mmdev_size ? device->mmdev_size - *offset : size;
+    if(!device->data){
+        /*If not allocated, allocate now */
+        device->data = kmalloc(mmdev_size);
+    }
+
+    if(copy_from_user(device->data[*offset]), ubuf, size){
+        ret = -EFAULT;
+        goto finish;
+    }
+    *offset += size;
+    rem = device->mmdev_size - *offset;
+    if(rem){
+        /*Fill remainder of device with MAGIC_VAL*/
+        memset(device->data[*offset], MAGIC_VAL, rem);
+    }
 
     finish :
         up(&device->sem);
