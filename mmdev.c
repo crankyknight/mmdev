@@ -31,8 +31,8 @@ u32 mmdev_minor = 0;
 
 static int mmdev_open(struct inode* i_node, struct file* filp)
 {
-    struct mmdev_dev *device = container_of(i_node->cdev, struct mmdev_dev, cdev);
-    filp->.private_data = device;
+    struct mmdev_dev *device = container_of(i_node->i_cdev, struct mmdev_dev, cdev);
+    filp->private_data = device;
     if((filp->f_flags & O_ACCMODE) == O_WRONLY){
         if(device->data){
             if(down_interruptible(&device->sem))
@@ -51,12 +51,12 @@ static int mmdev_release(struct inode* i_node, struct file* filp)
 
 static ssize_t mmdev_read(struct file* filp, char __user* ubuf, size_t size, loff_t* offset)
 {
-    unsigned long n;
     ssize_t ret;
     struct mmdev_dev *device = filp->private_data;
+    KDBG("Starting module read\n");
     if(down_interruptible(&device->sem))
         return -ERESTARTSYS;
-    if(!access_ok(VERIFY_READ, (void __user*)ubuf, (unsigned long)size)){
+    if(!access_ok(VERIFY_WRITE, (void __user*)ubuf, (unsigned long)size)){
         ret = -EFAULT;
         goto finish;
     }
@@ -65,7 +65,7 @@ static ssize_t mmdev_read(struct file* filp, char __user* ubuf, size_t size, lof
         goto finish;
     }
     size = ((*offset + size) > device->mmdev_size) ? device->mmdev_size - *offset : size; 
-    if(copy_to_user(ubuf, device->data[*offset]), size){
+    if(copy_to_user(ubuf, &((char*)(device->data))[*offset], size)){
         ret = -EFAULT;
         goto finish;
     }
@@ -78,16 +78,17 @@ static ssize_t mmdev_read(struct file* filp, char __user* ubuf, size_t size, lof
         return ret;
 }
 
-static ssize_t mmdev_write(struct file* filp, char __user* ubuf, size_t size, loff_t* offset)
+static ssize_t mmdev_write(struct file* filp, const char __user* ubuf, size_t size, loff_t* offset)
 {
     ssize_t ret;
     u32 rem;
     struct mmdev_dev *device = filp->private_data;
 
+    KDBG("Starting module write\n");
     if(down_interruptible(&device->sem))
         return -ERESTARTSYS;
 
-    if(!access_ok(VERIFY_WRITE, (void __user*)ubuf, (unsigned long)size)){
+    if(!access_ok(VERIFY_READ, (void __user*)ubuf, (unsigned long)size)){
         ret = -EFAULT;
         goto finish;
     }
@@ -98,10 +99,11 @@ static ssize_t mmdev_write(struct file* filp, char __user* ubuf, size_t size, lo
     size = (*offset + size) > device->mmdev_size ? device->mmdev_size - *offset : size;
     if(!device->data){
         /*If not allocated, allocate now */
-        device->data = kmalloc(mmdev_size);
+        device->data = kmalloc(device->mmdev_size, GFP_KERNEL);
+        KDBG("Allocated data as %p", device->data);
     }
 
-    if(copy_from_user(device->data[*offset]), ubuf, size){
+    if(copy_from_user(&((char*)(device->data))[*offset], ubuf, size)){
         ret = -EFAULT;
         goto finish;
     }
@@ -109,7 +111,7 @@ static ssize_t mmdev_write(struct file* filp, char __user* ubuf, size_t size, lo
     rem = device->mmdev_size - *offset;
     if(rem){
         /*Fill remainder of device with MAGIC_VAL*/
-        memset(device->data[*offset], MAGIC_VAL, rem);
+        memset(&((char*)(device->data))[*offset], MAGIC_VAL, rem);
     }
 
     finish :
@@ -131,7 +133,7 @@ static void mmdev_exit_module(void)
     if(mmdev_devices){
         for(i=0; i<mmdev_nr_dev; i++){
             if(mmdev_devices[i].data){
-                kfree(mmdev_devices[i].data)
+                kfree(mmdev_devices[i].data);
             }
             cdev_del(&mmdev_devices[i].cdev);
         }
@@ -139,6 +141,7 @@ static void mmdev_exit_module(void)
     }
 
     unregister_chrdev_region(MKDEV(mmdev_major, mmdev_minor), mmdev_nr_dev);
+    KDBG("Module exit complete\n");
 }
 
 static void mmdev_setup_cdev(struct mmdev_dev *mmdev, u32 index)
@@ -159,24 +162,26 @@ int mmdev_init_module(void)
     dev_t dev;
     u32 result, i;
 
-    result = alloc_chrdev_region(&dev, mmdev_minor, mmdev_nr_dev);
+    result = alloc_chrdev_region(&dev, mmdev_minor, mmdev_nr_dev, "mmdev");
     if(result<0){
         KDBG("Chardev allocation error");
         return result;
     }
     mmdev_major = MAJOR(dev);
    
-    mm_device = kmalloc(mmdev_nr_dev * sizeof(struct mmdev_dev));
-    if(!mm_device){
+    mmdev_devices = kmalloc(mmdev_nr_dev * sizeof(struct mmdev_dev), GFP_KERNEL);
+    if(!mmdev_devices){
         KDBG("Memory allocation error");
         goto out;
     }
 
     for(i=0; i<mmdev_nr_dev; i++){
-        mm_device[i].mmdev_size = mmdev_size;
-        sema_init(&mm_device[i].sem, 1);
-        mmdev_setup_cdev(&mm_device[i], i); 
+        mmdev_devices[i].mmdev_size = MMDEV_SIZE;
+        sema_init(&mmdev_devices[i].sem, 1);
+        mmdev_setup_cdev(&mmdev_devices[i], i); 
     }
+
+    KDBG("Module init complete\n");
     return 0;
 
     out :
