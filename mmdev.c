@@ -20,7 +20,7 @@ int mmdev_nr_dev = MMDEV_NR_DEV;
 int mmdev_debug = 7;
 
 module_param(mmdev_nr_dev, int, 0444);
-module_param(mmdev_debug, int, 0644);
+module_param(mmdev_debug, int, 0664);
 
 MODULE_AUTHOR("Abhishek Kumar");
 MODULE_LICENSE("Dual BSD/GPL");
@@ -61,7 +61,12 @@ static ssize_t mmdev_read(struct file* filp, char __user* ubuf, size_t size, lof
         ret = -EFAULT;
         goto finish;
     }
-    if(!device->data || (*offset > device->mmdev_size)){
+    if(!device->data){
+        ret = 0;
+        goto finish;
+    }
+
+    if (*offset > device->mmdev_size){
         KDBGRD("Offset too large\n");
         ret = -EFAULT;
         goto finish;
