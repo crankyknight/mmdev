@@ -1,3 +1,8 @@
+DEBUG=n
+#ifeq ($(DEBUG),y)
+#	EXTRA_CFLAGS= -g 
+#endif
+
 ifneq ($(KERNELRELEASE),)
 obj-m += mmdev.o
 else 
@@ -9,4 +14,4 @@ default:
 endif
 
 clean:
-	$(RM) *.o *.ko *.mod.c
+	$(RM) *.o *.ko *.mod.c *.order *.symvers
