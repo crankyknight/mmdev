@@ -1,7 +1,7 @@
-DEBUG=n
-#ifeq ($(DEBUG),y)
-#	EXTRA_CFLAGS= -g 
-#endif
+DEBUG=y
+ifeq ($(DEBUG),y)
+	EXTRA_CFLAGS= -g 
+endif
 
 ifneq ($(KERNELRELEASE),)
 obj-m += mmdev.o

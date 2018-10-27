@@ -5,13 +5,13 @@ if [ "$EUID" -ne 0 ]; then
     echo "This file should be run as root. Exiting..."
     exit -1
 fi
-#Run make 
-make
 
 MODULE_NAME=mmdev
 NUM_DEV=4
 
 set -e
+#Run make 
+make
 echo "Loading module $MODULE_NAME"
 insmod $MODULE_NAME.ko
 

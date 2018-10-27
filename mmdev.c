@@ -38,6 +38,7 @@ static int mmdev_open(struct inode* i_node, struct file* filp)
             if(down_interruptible(&device->sem))
                 return -ERESTARTSYS;
             kfree(device->data);
+            device->data = NULL;
             up(&device->sem);
         }
     }
@@ -87,11 +88,11 @@ static ssize_t mmdev_read(struct file* filp, char __user* ubuf, size_t size, lof
 
 static ssize_t mmdev_write(struct file* filp, const char __user* ubuf, size_t size, loff_t* offset)
 {
-    ssize_t ret;
+    ssize_t ret = -ENOMEM;
     u32 rem;
     struct mmdev_dev *device = filp->private_data;
 
-    KDBGWR("Starting module write\n");
+    KDBGWR("Starting module write : device size = %d\n", device->mmdev_size);
     if(down_interruptible(&device->sem))
         return -ERESTARTSYS;
 
@@ -110,6 +111,7 @@ static ssize_t mmdev_write(struct file* filp, const char __user* ubuf, size_t si
     if(!device->data){
         /*If not allocated, allocate now */
         device->data = kmalloc(device->mmdev_size, GFP_KERNEL);
+        if(!device->data) goto finish;
         KDBGWR("Allocated data as %p\n", device->data);
     }
 
@@ -131,12 +133,36 @@ static ssize_t mmdev_write(struct file* filp, const char __user* ubuf, size_t si
         return ret;
 }
 
+static loff_t mmdev_llseek(struct file *filp, loff_t off, int whence)
+{
+    struct mmdev_dev *device = filp->private_data;
+    loff_t newoff;
+
+    switch(whence){
+        case SEEK_SET : 
+            newoff = off;
+            break;
+        case SEEK_CUR :
+            newoff = filp->f_pos + off;
+            break;
+        case SEEK_END :
+            newoff = device->mmdev_size + off;
+            break;
+        default :
+            return -EINVAL;
+    }
+    if(newoff < 0) return -EINVAL;
+    filp->f_pos = newoff;
+    return newoff;
+}
+
 static struct file_operations mmdev_fops = {
     .owner   = THIS_MODULE,
     .open    = mmdev_open,
     .release = mmdev_release,
     .read    = mmdev_read,
     .write   = mmdev_write,
+    .llseek  = mmdev_llseek,
 };
 
 static void mmdev_exit_module(void)
@@ -183,10 +209,12 @@ int mmdev_init_module(void)
    
     mmdev_devices = kmalloc(mmdev_nr_dev * sizeof(struct mmdev_dev), GFP_KERNEL);
     if(!mmdev_devices){
+        result = -ENOMEM;
         KDBG("Memory allocation error");
         goto out;
     }
 
+    memset(mmdev_devices, 0, mmdev_nr_dev * sizeof(struct mmdev_dev));
     for(i=0; i<mmdev_nr_dev; i++){
         mmdev_devices[i].data = NULL;
         mmdev_devices[i].mmdev_size = MMDEV_SIZE;
@@ -199,7 +227,7 @@ int mmdev_init_module(void)
 
     out :
         mmdev_exit_module();
-        return 1;
+        return result;
 }
 
 module_init(mmdev_init_module);

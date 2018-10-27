@@ -32,6 +32,7 @@
 struct mmdev_dev{
     void *data;
     u32 mmdev_size;
+    loff_t curpos;
     struct cdev cdev;
     struct semaphore sem;
 };
