@@ -4,8 +4,6 @@
 #define MMDEV_NR_DEV  (4)
 #define MMDEV_SIZE    (4096)
 
-#define MAGIC_VAL     (0x5a)
-
 #define MMDEV_DBG_GEN   (0x1)
 #define MMDEV_DBG_RD    (0x2)
 #define MMDEV_DBG_WR    (0x4)
@@ -32,9 +30,23 @@
 struct mmdev_dev{
     void *data;
     u32 mmdev_size;
-    loff_t curpos;
+    u32 w_size;
+    u8 magic_val;
     struct cdev cdev;
     struct semaphore sem;
 };
+
+/* IOCTL definitions */
+#define MMDEV_IOCTL_MAGIC ('x')
+
+#define MMDEV_IOCRESET _IO(MMDEV_IOCTL_MAGIC, 0)
+#define MMDEV_IOCGTOTSIZE _IOR(MMDEV_IOCTL_MAGIC, 1, u32)
+#define MMDEV_IOCGCURSIZE _IOR(MMDEV_IOCTL_MAGIC, 2, u32)
+#define MMDEV_IOCSTOTSIZE _IOW(MMDEV_IOCTL_MAGIC, 3, u32)
+#define MMDEV_IOCSCURSIZE _IOW(MMDEV_IOCTL_MAGIC, 4, u32)
+#define MMDEV_IOCXCURSIZE _IOWR(MMDEV_IOCTL_MAGIC, 5, u32)
+#define MMDEV_IOCXFILLER  _IOWR(MMDEV_IOCTL_MAGIC, 6, u8)
+
+#define MMDEV_IOCMAXNR (6)
 
 #endif /*_MMDEV_H_*/

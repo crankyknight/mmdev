@@ -39,6 +39,7 @@ static int mmdev_open(struct inode* i_node, struct file* filp)
                 return -ERESTARTSYS;
             kfree(device->data);
             device->data = NULL;
+            device->w_size = 0;
             up(&device->sem);
         }
     }
@@ -121,11 +122,12 @@ static ssize_t mmdev_write(struct file* filp, const char __user* ubuf, size_t si
         goto finish;
     }
     *offset += size;
+    device->w_size = *offset;
     ret = size;
     rem = device->mmdev_size - *offset;
     if(rem){
-        /*Fill remainder of device with MAGIC_VAL*/
-        memset(&((char*)(device->data))[*offset], MAGIC_VAL, rem);
+        /*Fill remainder of device with magic_val*/
+        memset(&((char*)(device->data))[*offset], device->magic_val, rem);
     }
 
     finish :
@@ -156,6 +158,82 @@ static loff_t mmdev_llseek(struct file *filp, loff_t off, int whence)
     return newoff;
 }
 
+static long mmdev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    long retval=0;
+    u8 old_val;
+    struct mmdev_dev *device = filp->private_data;
+
+    if(_IOC_TYPE(cmd) != MMDEV_IOCTL_MAGIC)
+        return -ENOTTY;
+    if(_IOC_NR(cmd) > MMDEV_IOCMAXNR)
+        return -ENOTTY;
+
+    /*Write checked before read, writers always have read access */
+    if(_IOC_DIR(cmd) & _IOC_READ)
+        retval = !access_ok(VERIFY_WRITE, (void __user*)arg, _IOC_SIZE(cmd));
+    else if(_IOC_DIR(cmd) & _IOC_WRITE)
+        retval = !access_ok(VERIFY_READ, (void __user*)arg, _IOC_SIZE(cmd));
+    if(retval) return -ENOTTY;
+    if(!capable(CAP_SYS_ADMIN)){
+        return -EPERM;
+    }
+
+    switch(cmd){
+        case MMDEV_IOCRESET :
+            if(device->data){
+                kfree(device->data);
+                device->data = NULL;
+            }
+            device->mmdev_size = MMDEV_SIZE;
+            device->magic_val = 0x5a; /* ASCII - Z */
+            break;
+
+        case MMDEV_IOCGTOTSIZE :
+            retval = __put_user(device->mmdev_size, (u32*)arg);
+            break;
+
+        case MMDEV_IOCGCURSIZE :
+            retval = __put_user(device->w_size, (u32*)arg);
+            break;
+
+        case MMDEV_IOCSTOTSIZE :
+            retval = __get_user(device->mmdev_size, (u32*) arg);
+            if(device->mmdev_size > MMDEV_SIZE)
+                device->mmdev_size = MMDEV_SIZE; /*Limiting max size to 4096 */
+            if(device->w_size > device->mmdev_size)
+                device->w_size -= device->mmdev_size;
+            break;
+
+        case MMDEV_IOCSCURSIZE :
+            retval = __get_user(device->w_size, (u32*) arg);
+            if(device->w_size > device->mmdev_size)
+                device->w_size -= device->mmdev_size;
+            break;
+
+        case MMDEV_IOCXCURSIZE :
+            retval = __get_user(device->w_size, (u32*) arg);
+            if(device->w_size > device->mmdev_size)
+                device->w_size = device->mmdev_size;
+            if(!retval)
+                retval = __put_user(device->w_size, (u32*) arg);
+            break;
+
+        case MMDEV_IOCXFILLER :
+            old_val = device->magic_val;
+            retval = __get_user(device->magic_val, (u8*)arg);
+            if(!retval)
+                __put_user(old_val, (u8*)arg);
+            break;
+
+        default : 
+            return -ENOTTY;
+            break;
+    }
+
+    return retval;
+}
+
 static struct file_operations mmdev_fops = {
     .owner   = THIS_MODULE,
     .open    = mmdev_open,
@@ -163,6 +241,7 @@ static struct file_operations mmdev_fops = {
     .read    = mmdev_read,
     .write   = mmdev_write,
     .llseek  = mmdev_llseek,
+    .unlocked_ioctl = mmdev_ioctl,
 };
 
 static void mmdev_exit_module(void)
@@ -218,6 +297,7 @@ int mmdev_init_module(void)
     for(i=0; i<mmdev_nr_dev; i++){
         mmdev_devices[i].data = NULL;
         mmdev_devices[i].mmdev_size = MMDEV_SIZE;
+        mmdev_devices[i].magic_val = 0x5a; /* ASCII - Z */
         sema_init(&mmdev_devices[i].sem, 1);
         mmdev_setup_cdev(&mmdev_devices[i], i); 
     }
