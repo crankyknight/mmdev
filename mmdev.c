@@ -55,9 +55,21 @@ static ssize_t mmdev_read(struct file* filp, char __user* ubuf, size_t size, lof
 {
     ssize_t ret;
     struct mmdev_dev *device = filp->private_data;
-    KDBGRD("Starting module read\n");
     if(down_interruptible(&device->sem))
         return -ERESTARTSYS;
+    /* Blocking read */
+    while(device->w_size == 0){
+        up(&device->sem);
+        if(filp->f_flags & O_NONBLOCK)
+            return -EAGAIN;
+        KDBGRD("Blocking read, going to sleep\n");
+        if(wait_event_interruptible(device->readq, device->w_size != 0))
+            return -ERESTARTSYS; /*Woken by signal */
+        if(down_interruptible(&device->sem))
+            return -ERESTARTSYS;
+    }
+    KDBGRD("Starting module read\n");
+    /* Read data available */
     if(!access_ok(VERIFY_WRITE, (void __user*)ubuf, (unsigned long)size)){
         KDBGRD("Access not ok\n");
         ret = -EFAULT;
@@ -132,6 +144,9 @@ static ssize_t mmdev_write(struct file* filp, const char __user* ubuf, size_t si
 
     finish :
         up(&device->sem);
+        /* Wake up any waiting readers, done after releasing semaphore 
+         * Possible to prevent calling each time ? */
+        wake_up_interruptible(&device->readq);
         return ret;
 }
 
@@ -234,6 +249,11 @@ static long mmdev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     return retval;
 }
 
+static int mmdev_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+
+}
+
 static struct file_operations mmdev_fops = {
     .owner   = THIS_MODULE,
     .open    = mmdev_open,
@@ -242,6 +262,7 @@ static struct file_operations mmdev_fops = {
     .write   = mmdev_write,
     .llseek  = mmdev_llseek,
     .unlocked_ioctl = mmdev_ioctl,
+    .mmap = mmdev_mmap,
 };
 
 static void mmdev_exit_module(void)
@@ -298,6 +319,7 @@ int mmdev_init_module(void)
         mmdev_devices[i].data = NULL;
         mmdev_devices[i].mmdev_size = MMDEV_SIZE;
         mmdev_devices[i].magic_val = 0x5a; /* ASCII - Z */
+        init_waitqueue_head(&mmdev_devices[i].readq);
         sema_init(&mmdev_devices[i].sem, 1);
         mmdev_setup_cdev(&mmdev_devices[i], i); 
     }

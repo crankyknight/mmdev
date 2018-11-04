@@ -32,6 +32,7 @@ struct mmdev_dev{
     u32 mmdev_size;
     u32 w_size;
     u8 magic_val;
+    wait_queue_head_t readq;
     struct cdev cdev;
     struct semaphore sem;
 };
