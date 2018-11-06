@@ -13,6 +13,7 @@
 #include <linux/cdev.h>
 #include <linux/uaccess.h>	/* copy_*_user */
 #include <linux/string.h> /* memset */
+#include <linux/mm.h> /* vm_operations_struct */
 
 #include "mmdev.h"
 
@@ -33,7 +34,7 @@ static int mmdev_open(struct inode* i_node, struct file* filp)
 {
     struct mmdev_dev *device = container_of(i_node->i_cdev, struct mmdev_dev, cdev);
     filp->private_data = device;
-    if((filp->f_flags & O_ACCMODE) == O_WRONLY){
+    if((filp->f_flags & O_ACCMODE) == O_WRONLY && !device->vmaps){
         if(device->data){
             if(down_interruptible(&device->sem))
                 return -ERESTARTSYS;
@@ -196,6 +197,9 @@ static long mmdev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
     switch(cmd){
         case MMDEV_IOCRESET :
+            /* If device mapped by another process, don't reset */
+            if(device->vmaps)
+                return -ERESTARTSYS;
             if(device->data){
                 kfree(device->data);
                 device->data = NULL;
@@ -213,6 +217,8 @@ static long mmdev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
             break;
 
         case MMDEV_IOCSTOTSIZE :
+            if(device->vmaps)
+                return -ERESTARTSYS;
             retval = __get_user(device->mmdev_size, (u32*) arg);
             if(device->mmdev_size > MMDEV_SIZE)
                 device->mmdev_size = MMDEV_SIZE; /*Limiting max size to 4096 */
@@ -249,9 +255,80 @@ static long mmdev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     return retval;
 }
 
-static int mmdev_mmap(struct file *filp, struct vm_area_struct *vma)
+static void mmdev_vma_open(struct vm_area_struct *vma)
 {
+   struct mmdev_dev *device = vma->vm_private_data;
+   KDBG("VMA open virt = %lx, phys off = %lx\n", vma->vm_start, 
+           vma->vm_pgoff<<PAGE_SHIFT);
+   device->vmaps++;
+   
+}
 
+static void mmdev_vma_close(struct vm_area_struct *vma)
+{
+   struct mmdev_dev *device = vma->vm_private_data;
+   KDBG("VMA close virt = %lx, phys off = %lx\n", vma->vm_start, 
+           vma->vm_pgoff<<PAGE_SHIFT);
+   device->vmaps--;
+}
+
+static int mmdev_vma_nopage(struct vm_fault *vmf)
+{
+    struct vm_area_struct *vma = vmf->vma;
+    struct mmdev_dev *device = vma->vm_private_data;
+    int retval = VM_FAULT_NOPAGE; 
+    void *pageptr;
+    struct page *pg = NULL;
+
+    /* This can be avoided as device is only 1 page as of now
+     * Done anyway in case of future expansion */
+    unsigned long dev_offset = vmf->address - vma->vm_start + vmf->pgoff;
+
+    if(down_interruptible(&device->sem))
+        return -ERESTARTSYS;
+    if(dev_offset >= device->mmdev_size) goto out;
+    pageptr = device->data;
+    if(!pageptr) goto out;
+
+    pg = virt_to_page(pageptr);
+    /* Increment ref count */
+    get_page(pg);
+    
+    vmf->page = pg;
+    retval = 0;
+
+    out:
+        up(&device->sem);
+        return retval;
+
+}
+
+static struct vm_operations_struct mmdev_vma_ops = {
+    .open = mmdev_vma_open,
+    .close = mmdev_vma_close,
+    .fault = mmdev_vma_nopage,
+};
+
+ __attribute__((unused)) static int mmdev_remap_mmap(struct file *filp, struct vm_area_struct *vma) 
+{
+    if(remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff, 
+                vma->vm_end - vma->vm_start, vma->vm_page_prot))
+        return -EAGAIN;
+
+    vma->vm_ops = &mmdev_vma_ops;
+    mmdev_vma_open(vma);
+    return 0;
+    
+}
+
+static int mmdev_nopage_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+    /*Let nopage handle faults */
+    vma->vm_ops = &mmdev_vma_ops;
+    vma->vm_private_data = filp->private_data;
+    mmdev_vma_open(vma);
+    return 0;
+    
 }
 
 static struct file_operations mmdev_fops = {
@@ -262,7 +339,11 @@ static struct file_operations mmdev_fops = {
     .write   = mmdev_write,
     .llseek  = mmdev_llseek,
     .unlocked_ioctl = mmdev_ioctl,
-    .mmap = mmdev_mmap,
+#if 0
+    .mmap = mmdev_remap_mmap,
+#else
+    .mmap = mmdev_nopage_mmap,
+#endif
 };
 
 static void mmdev_exit_module(void)
