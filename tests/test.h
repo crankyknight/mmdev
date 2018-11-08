@@ -1,3 +1,11 @@
+#define DEV_SIZE_DEFAULT (4096)
+#define DEV_FILLER_DEFAULT (0x5a)
+
+#define VERBOSE_PRINT(fmt, args...) \
+    do{\
+        if(print_flag) printf(fmt, ##args);\
+    }while(0)
+
 /* IOCTL definitions */
 #define MMDEV_IOCTL_MAGIC ('x')
 
