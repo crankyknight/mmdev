@@ -107,8 +107,10 @@ static ssize_t mmdev_write(struct file* filp, const char __user* ubuf, size_t si
     struct mmdev_dev *device = filp->private_data;
 
     KDBGWR("Starting module write : device size = %d\n", device->mmdev_size);
-    if(down_interruptible(&device->sem))
+    if(down_interruptible(&device->sem)){
+        KDBGWR("Semaphore not obtained\n");
         return -ERESTARTSYS;
+    }
 
     if(!access_ok(VERIFY_READ, (void __user*)ubuf, (unsigned long)size)){
         KDBGWR("Access not ok\n");
@@ -191,20 +193,20 @@ static long mmdev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     else if(_IOC_DIR(cmd) & _IOC_WRITE)
         retval = !access_ok(VERIFY_READ, (void __user*)arg, _IOC_SIZE(cmd));
     if(retval) return -ENOTTY;
-    if(!capable(CAP_SYS_ADMIN)){
-        return -EPERM;
-    }
 
     switch(cmd){
         case MMDEV_IOCRESET :
+            if(!capable(CAP_SYS_ADMIN))
+                return -EPERM;
             /* If device mapped by another process, don't reset */
             if(device->vmaps)
-                return -ERESTARTSYS;
+                return -EBUSY;
             if(device->data){
                 kfree(device->data);
                 device->data = NULL;
             }
             device->mmdev_size = MMDEV_SIZE;
+            device->w_size = 0;
             device->magic_val = 0x5a; /* ASCII - Z */
             break;
 
@@ -217,22 +219,28 @@ static long mmdev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
             break;
 
         case MMDEV_IOCSTOTSIZE :
+            if(!capable(CAP_SYS_ADMIN))
+                return -EPERM;
             if(device->vmaps)
                 return -ERESTARTSYS;
             retval = __get_user(device->mmdev_size, (u32*) arg);
             if(device->mmdev_size > MMDEV_SIZE)
                 device->mmdev_size = MMDEV_SIZE; /*Limiting max size to 4096 */
             if(device->w_size > device->mmdev_size)
-                device->w_size -= device->mmdev_size;
+                device->w_size = device->mmdev_size;
             break;
 
         case MMDEV_IOCSCURSIZE :
+            if(!capable(CAP_SYS_ADMIN))
+                return -EPERM;
             retval = __get_user(device->w_size, (u32*) arg);
             if(device->w_size > device->mmdev_size)
-                device->w_size -= device->mmdev_size;
+                device->w_size = device->mmdev_size;
             break;
 
         case MMDEV_IOCXCURSIZE :
+            if(!capable(CAP_SYS_ADMIN))
+                return -EPERM;
             retval = __get_user(device->w_size, (u32*) arg);
             if(device->w_size > device->mmdev_size)
                 device->w_size = device->mmdev_size;
@@ -241,6 +249,8 @@ static long mmdev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
             break;
 
         case MMDEV_IOCXFILLER :
+            if(!capable(CAP_SYS_ADMIN))
+                return -EPERM;
             old_val = device->magic_val;
             retval = __get_user(device->magic_val, (u8*)arg);
             if(!retval)
@@ -284,6 +294,7 @@ static int mmdev_vma_nopage(struct vm_fault *vmf)
      * Done anyway in case of future expansion */
     unsigned long dev_offset = vmf->address - vma->vm_start + vmf->pgoff;
 
+    KDBG("Handling page fault");
     if(down_interruptible(&device->sem))
         return -ERESTARTSYS;
     if(dev_offset >= device->mmdev_size) goto out;
@@ -327,6 +338,7 @@ static int mmdev_nopage_mmap(struct file *filp, struct vm_area_struct *vma)
     vma->vm_ops = &mmdev_vma_ops;
     vma->vm_private_data = filp->private_data;
     mmdev_vma_open(vma);
+    KDBG("Mmap done");
     return 0;
     
 }
