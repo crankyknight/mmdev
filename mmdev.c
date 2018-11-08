@@ -322,23 +322,27 @@ static struct vm_operations_struct mmdev_vma_ops = {
 
  __attribute__((unused)) static int mmdev_remap_mmap(struct file *filp, struct vm_area_struct *vma) 
 {
+    /* Remapping RAM will not work with remap_pfn_range. 
+     * It remaps to page 0. Writes will not reflect on device */
     if(remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff, 
                 vma->vm_end - vma->vm_start, vma->vm_page_prot))
         return -EAGAIN;
 
+    vma->vm_private_data = filp->private_data;
     vma->vm_ops = &mmdev_vma_ops;
     mmdev_vma_open(vma);
+    KDBG("Mmap(remap) done");
     return 0;
     
 }
 
-static int mmdev_nopage_mmap(struct file *filp, struct vm_area_struct *vma)
+  __attribute__((unused)) static int mmdev_nopage_mmap(struct file *filp, struct vm_area_struct *vma)
 {
     /*Let nopage handle faults */
     vma->vm_ops = &mmdev_vma_ops;
     vma->vm_private_data = filp->private_data;
     mmdev_vma_open(vma);
-    KDBG("Mmap done");
+    KDBG("Mmap(nopage) done");
     return 0;
     
 }
